@@ -1,0 +1,14 @@
+[Unit]
+Description=Push desktop state to a Kaleidoscope keyboard for LED effects
+
+[Service]
+ExecStart=@out@/bin/kaleidoscope-hostlink
+# The daemon exits with a non-zero status if any of its threads panics;
+# a clean stop (SIGTERM) exits 0 and is not restarted.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+# The daemon waits patiently for both Hyprland and the keyboard to appear, so
+# it doesn't need to be tied to graphical-session.target.
+WantedBy=default.target
