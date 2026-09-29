@@ -409,9 +409,12 @@ class HostlinkObs : public kaleidoscope::Plugin {
   }
 
   static cRGB alertColor(uint8_t flags, cRGB base, uint32_t now) {
-    if ((flags & ALERT) && (now % kAlertFlashPeriodMs) < (kAlertFlashPeriodMs / 2))
-      return CRGB(255, 255, 255);
-    return dimColor(base, 50);
+    if (flags & ALERT) {
+      if ((now % kAlertFlashPeriodMs) < (kAlertFlashPeriodMs / 2))
+        return CRGB(255, 255, 255);
+      return dimColor(base, 50);
+    }
+    return base;
   }
 
   static cRGB colorFor(uint8_t key, uint8_t flags, uint32_t now) {
