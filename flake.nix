@@ -14,9 +14,19 @@
       packages = forAllSystems (system: {
         default = pkgsFor.${system}.callPackage ./default.nix { };
       });
+
       devShells = forAllSystems (system: {
         default = pkgsFor.${system}.callPackage ./shell.nix { };
       });
+
+      homeManagerModules.default = { pkgs, ... }: {
+        home.services.kaleidoscope-hostlink = {
+          imports = [
+            self.packages.${pkgs.stdenv.hostPlatform.system}.default.passthru.services.default
+          ];
+        };
+      };
+
       overlays.default = final: prev: {
         kaleidoscope-hostlink =
           self.packages.${prev.stdenv.hostPlatform.system}.default;

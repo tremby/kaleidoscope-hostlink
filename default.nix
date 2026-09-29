@@ -1,6 +1,6 @@
 { lib, rustPlatform }:
 
-rustPlatform.buildRustPackage {
+rustPlatform.buildRustPackage (finalAttrs: {
   pname = "kaleidoscope-hostlink";
   version = "0.1.0";
 
@@ -16,8 +16,24 @@ rustPlatform.buildRustPackage {
 
   cargoLock.lockFile = ./Cargo.lock;
 
-  # Ship the systemd user unit inside the package, with the store path of the
-  # binary filled in. NixOS picks it up via `systemd.packages`.
+  passthru.services.default = {
+    _class = "service";
+
+    process.argv = [
+      "${finalAttrs.finalPackage}/bin/kaleidoscope-hostlink"
+    ];
+
+    systemd.services."".serviceConfig = {
+      Restart = "on-failure";
+      RestartSec = 2;
+    };
+
+    systemd.services."".unitConfig = {
+      Description =
+        "Push desktop state to a Kaleidoscope keyboard for LED effects";
+    };
+  };
+
   postInstall = ''
     install -Dm444 kaleidoscope-hostlink.service \
       $out/lib/systemd/user/kaleidoscope-hostlink.service
@@ -30,4 +46,4 @@ rustPlatform.buildRustPackage {
     platforms = lib.platforms.linux;
     mainProgram = "kaleidoscope-hostlink";
   };
-}
+})

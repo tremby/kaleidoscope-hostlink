@@ -76,3 +76,17 @@ Build and flash the firmware to your keyboard.
 Build via the standard Rust toolchain, or run `nix build` if you have Nix.
 
 Start the binary manually or use the systemd unit file.
+
+### Via Nix Home Manager
+
+Add this package to your flake inputs, then:
+
+```nix
+{ inputs, pkgs, ... }:
+{
+  imports = [
+    inputs.kaleidoscope-hostlink.homeManagerModules.default
+  ];
+  # ...
+}
+```
