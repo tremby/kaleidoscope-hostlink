@@ -1,6 +1,8 @@
-/* Hostlink.h -- host-pushed state channels + Hyprland workspace overlay
+/* Hostlink.h -- host-pushed state channels + desktop status overlays
  *
- * Header-only Kaleidoscope plugin pair. Include from your sketch (.ino) once.
+ * Header-only Kaleidoscope plugins: the Hostlink transport, plus overlays for
+ * Hyprland workspaces (HostlinkWorkspaces) and OBS status (HostlinkObs).
+ * Include from your sketch (.ino) once.
  *
  *   #include "Hostlink.h"
  *
@@ -10,7 +12,8 @@
  *     ...your LED effects...,
  *     Focus,               // Kaleidoscope-FocusSerial
  *     Hostlink,            // transport (Focus commands + channel registry)
- *     HostlinkWorkspaces   // overlay; must come AFTER your LED effects
+ *     HostlinkObs,         // overlay; must come AFTER your LED effects
+ *     HostlinkWorkspaces   // overlay; LAST, so it wins on keys 1-5 while Super is held
  *   );
  *
  * ---------------------------------------------------------------------------
@@ -30,6 +33,9 @@
  *
  * Channel 0: Hyprland workspaces. 11 bytes: workspaces 1..10, then the special
  * workspace. Each byte is a bitfield, see HostlinkWorkspaces::Flags.
+ *
+ * Channel 1: OBS. 6 bytes: keys 1..5, then the M key. Each byte is a bitfield,
+ * see HostlinkObs::Flags. Cleared by the host when OBS goes away.
  *
  * To add a feature later: write another small plugin that owns a
  * HostlinkChannel with a new id and registers it in onSetup(), exactly as
@@ -230,6 +236,7 @@ class HostlinkWorkspaces : public kaleidoscope::Plugin {
   // Rainbow speed: hue advances by 1 (of 256) every 2^kRainbowShift ms, so one
   // full cycle takes 256 << kRainbowShift ms. 3 = ~2.0 s, 2 = ~1.0 s.
   static constexpr uint8_t kRainbowShift = 2;
+  static constexpr uint8_t kRainbowValue = 255;  // rainbow brightness (0..255)
 
   HostlinkWorkspaces() : channel_(kChannelId) {}
 
@@ -298,7 +305,7 @@ class HostlinkWorkspaces : public kaleidoscope::Plugin {
   static cRGB colorFor(uint8_t flags, bool flash_on, uint8_t hue) {
     if ((flags & URGENT) && flash_on) return CRGB(255, 0, 0);       // red flash
     if (flags & FOCUSED) return CRGB(255, 255, 255);                // white
-    if (flags & FULLSCREEN) return hsvToRgb(hue, 255, 255);         // rainbow
+    if (flags & FULLSCREEN) return hsvToRgb(hue, 255, kRainbowValue);  // rainbow
     if (flags & VISIBLE) return CRGB(200, 255, 0);                  // yellow-green
     if (flags & CLIENTS) return CRGB(0, 160, 0);                    // dark green
     return CRGB(0, 0, 96);                                          // dim blue
@@ -319,8 +326,124 @@ class HostlinkWorkspaces : public kaleidoscope::Plugin {
   bool painted_    = false;
 };
 
+
+// ---------------------------------------------------------------------------
+// Overlay plugin: OBS status on keys 1-5 and M.
+//
+//   1  magenta (dimmed to 75% unless Main scene is live)
+//   2  green, flashing white while Camera scene is live
+//   3  dim yellow, flashing white while Notes scene is live
+//   4  green, flashing white when the "Transparent camera" item is hidden
+//   5  yellow, flashing white when a "Digital notes overlay" group is shown
+//   M  untouched (your normal LEDs) unless the mic is muted: flashing red
+//
+// The host decides what is exceptional and only sends flags; this plugin owns
+// colours and timing. While the channel is stale (OBS not running, host gone)
+// it paints nothing, so your normal LED effect owns these keys.
+// ---------------------------------------------------------------------------
+class HostlinkObs : public kaleidoscope::Plugin {
+ public:
+  static constexpr uint8_t kChannelId = 1;
+  static constexpr uint8_t kNumKeys   = 6;  // keys 1..5, then M
+
+  enum Flags : uint8_t {
+    ACTIVE = 1 << 0,  // keys 1-3: the associated scene is the live scene
+    ALERT  = 1 << 1,  // keys 4-5: associated scene item in an exceptional state
+    MUTED  = 1 << 2,  // M: microphone muted
+  };
+
+  // Flash cycle lengths (ms). Each cycle is half "flash colour", half base.
+  static constexpr uint16_t kSceneFlashPeriodMs = 2000;
+  static constexpr uint16_t kAlertFlashPeriodMs = 250;
+  static constexpr uint16_t kMuteFlashPeriodMs  = 250;
+
+  HostlinkObs() : channel_(kChannelId) {}
+
+  EventHandlerResult onSetup() {
+    ::Hostlink.registerChannel(&channel_);
+    return EventHandlerResult::OK;
+  }
+
+  EventHandlerResult beforeSyncingLeds() {
+    const uint32_t now = Runtime.millisAtCycleStart();
+
+    if (!channel_.isFresh(now) || channel_.length() < kNumKeys) {
+      // Hand the LEDs back to the active LED effect, once.
+      if (painted_) {
+        for (uint8_t i = 0; i < 5; i++) ::LEDControl.refreshAt(addrOf(i));
+        if (m_flash_) ::LEDControl.refreshAt(addrOf(5));
+        painted_ = false;
+        m_flash_   = false;
+      }
+      return EventHandlerResult::OK;
+    }
+
+    const uint8_t *d = channel_.data();
+    for (uint8_t i = 0; i < 5; i++)
+      ::LEDControl.setCrgbAt(addrOf(i), colorFor(i, d[i], now));
+
+    // M: flash on the "on" half of the cycle while muted; otherwise passthrough.
+    const bool flash = (d[5] & MUTED) && (now % kMuteFlashPeriodMs) < (kMuteFlashPeriodMs / 2);
+    if (flash)
+      ::LEDControl.setCrgbAt(addrOf(5), CRGB(255, 0, 0));
+    else if (m_flash_)
+      ::LEDControl.refreshAt(addrOf(5));  // give the key back to the LED effect
+    m_flash_   = flash;
+    painted_ = true;
+    return EventHandlerResult::OK;
+  }
+
+ private:
+  static cRGB dimColor(cRGB color, uint8_t percentage) {
+    cRGB dimmed;
+    dimmed.r = (color.r * percentage) / 100;
+    dimmed.g = (color.g * percentage) / 100;
+    dimmed.b = (color.b * percentage) / 100;
+    return dimmed;
+  }
+
+  static cRGB sceneColor(uint8_t flags, cRGB base, uint32_t now) {
+    if ((flags & ACTIVE) && (now % kSceneFlashPeriodMs) < (kSceneFlashPeriodMs / 2))
+      return CRGB(255, 255, 255);
+    return base;
+  }
+
+  static cRGB alertColor(uint8_t flags, cRGB base, uint32_t now) {
+    if ((flags & ALERT) && (now % kAlertFlashPeriodMs) < (kAlertFlashPeriodMs / 2))
+      return CRGB(255, 255, 255);
+    return dimColor(base, 50);
+  }
+
+  static cRGB colorFor(uint8_t key, uint8_t flags, uint32_t now) {
+    switch (key) {
+    case 0: {  // magenta, no flashing; dimmer when Main scene isn't live
+      const uint8_t v = (flags & ACTIVE) ? 255 : 160;
+      return CRGB(v, 0, v);
+    }
+    case 1: return sceneColor(flags, CRGB(0, 255, 0), now);
+    case 2: return sceneColor(flags, CRGB(160, 160, 0), now);
+    case 3: return alertColor(flags, CRGB(0, 200, 0), now);
+    default: return alertColor(flags, CRGB(160, 160, 0), now);
+    }
+  }
+
+  // Model 100 matrix positions {row, col}: keys 1..5, then M.
+  static KeyAddr addrOf(uint8_t i) {
+    static const uint8_t kPos[kNumKeys][2] PROGMEM = {
+      {0, 1}, {0, 2}, {0, 3}, {0, 4}, {0, 5},  // 1 2 3 4 5
+      {3, 11},                                  // M
+    };
+    return KeyAddr(pgm_read_byte(&kPos[i][0]), pgm_read_byte(&kPos[i][1]));
+  }
+
+  HostlinkChannel channel_;
+  bool painted_ = false;  // we have written to keys 1-5 since the channel was last stale
+  bool m_flash_   = false;  // M is currently painted by us for a flash
+};
+
 }  // namespace plugin
 }  // namespace kaleidoscope
 
 kaleidoscope::plugin::Hostlink Hostlink;
 kaleidoscope::plugin::HostlinkWorkspaces HostlinkWorkspaces;
+kaleidoscope::plugin::HostlinkObs HostlinkObs;

@@ -10,6 +10,9 @@ serde_json = "1"
 # the 32U4 treats a 1200 baud open as "reboot into the bootloader".
 libc = "0.2"
 signal-hook = "0.3"
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+sha2 = "0.10"
+base64 = "0.22"
 
 [profile.release]
 opt-level = "s"
